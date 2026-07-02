@@ -31,7 +31,7 @@ func (a *API) today(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	var out []MetricToday
+	out := []MetricToday{} // encode [] not null when empty
 	for rows.Next() {
 		var m MetricToday
 		var day time.Time
@@ -43,6 +43,11 @@ func (a *API) today(w http.ResponseWriter, r *http.Request) {
 		out = append(out, m)
 	}
 
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
 	// Sparklines: one query for all metrics' last 14 z-scores.
 	spark := map[string][]float64{}
 	srows, err := a.Store.Pool.Query(ctx, `
@@ -50,19 +55,27 @@ func (a *API) today(w http.ResponseWriter, r *http.Request) {
 			SELECT metric, day, z, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY day DESC) rn
 			FROM metric_scored
 		) t WHERE rn <= 14 ORDER BY metric, day ASC`)
-	if err == nil {
-		defer srows.Close()
-		for srows.Next() {
-			var metric string
-			var z *float64
-			if srows.Scan(&metric, &z) == nil {
-				v := 0.0
-				if z != nil {
-					v = *z
-				}
-				spark[metric] = append(spark[metric], v)
-			}
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	defer srows.Close()
+	for srows.Next() {
+		var metric string
+		var z *float64
+		if err := srows.Scan(&metric, &z); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
 		}
+		v := 0.0
+		if z != nil {
+			v = *z
+		}
+		spark[metric] = append(spark[metric], v)
+	}
+	if err := srows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 	for i := range out {
 		out[i].Spark = spark[out[i].Metric]
@@ -79,9 +92,14 @@ type SeriesPoint struct {
 
 func (a *API) series(w http.ResponseWriter, r *http.Request) {
 	metric := chi.URLParam(r, "metric")
-	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
-	if days <= 0 || days > 730 {
-		days = 90
+	days := 90 // contract default; clamp to the contract max of 730
+	if q := r.URL.Query().Get("days"); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n <= 0 {
+			http.Error(w, "days must be a positive integer", 400)
+			return
+		}
+		days = min(n, 730)
 	}
 	rows, err := a.Store.Pool.Query(r.Context(), `
 		SELECT day, value, mean30, sd30 FROM metric_scored
@@ -102,6 +120,10 @@ func (a *API) series(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Day = day.Format("2006-01-02")
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 	writeJSON(w, out)
 }
@@ -125,10 +147,16 @@ func (a *API) listAnnotations(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var an Annotation
 		var day time.Time
-		if rows.Scan(&an.ID, &day, &an.Tag, &an.Note) == nil {
-			an.Day = day.Format("2006-01-02")
-			out = append(out, an)
+		if err := rows.Scan(&an.ID, &day, &an.Tag, &an.Note); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
 		}
+		an.Day = day.Format("2006-01-02")
+		out = append(out, an)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
 	writeJSON(w, out)
 }
@@ -142,6 +170,10 @@ func (a *API) createAnnotation(w http.ResponseWriter, r *http.Request) {
 	day, err := time.Parse("2006-01-02", in.Day)
 	if err != nil {
 		http.Error(w, "day must be YYYY-MM-DD", 400)
+		return
+	}
+	if in.Tag == "" {
+		http.Error(w, "tag is required", 400)
 		return
 	}
 	err = a.Store.Pool.QueryRow(r.Context(),

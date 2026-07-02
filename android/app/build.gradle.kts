@@ -13,8 +13,12 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
-        buildConfigField("String", "API_BASE", "\"http://10.0.2.2:8080\"") // emulator -> host
-        buildConfigField("String", "INGEST_TOKEN", "\"change-me\"")
+        // Configurable via gradle.properties or -PapiBase=... / -PingestToken=...
+        // Default reaches the host backend from the emulator.
+        val apiBase = (project.findProperty("apiBase") as String?) ?: "http://10.0.2.2:8080"
+        val ingestToken = (project.findProperty("ingestToken") as String?) ?: "change-me"
+        buildConfigField("String", "API_BASE", "\"$apiBase\"")
+        buildConfigField("String", "INGEST_TOKEN", "\"$ingestToken\"")
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions {

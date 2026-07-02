@@ -20,6 +20,9 @@ func main() {
 		log.Fatalf("db: %v", err)
 	}
 	defer st.Pool.Close()
+	if err := st.Pool.Ping(ctx); err != nil {
+		log.Fatalf("db ping: %v", err)
+	}
 
 	api := &httpapi.API{
 		Cfg:   cfg,

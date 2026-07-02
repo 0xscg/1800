@@ -15,6 +15,28 @@ export interface SeriesPoint {
   sd30: number | null;
 }
 
+export interface Annotation {
+  day: string; // date, required
+  tag: string; // required
+  note?: string;
+}
+
+/** Metrics the device shim may POST — mirrors DeviceSample.metric enum in contracts/openapi.yaml. */
+export type DeviceSampleMetric =
+  | "steps"
+  | "active_kcal"
+  | "vo2max"
+  | "hrv_sdnn_ms"
+  | "hrv_rmssd_ms"
+  | "resting_hr"
+  | "sleep_min";
+
+export interface DeviceSample {
+  day: string;
+  metric: DeviceSampleMetric;
+  value: number;
+}
+
 /** Display metadata. `higherIsBetter: null` = deviation in either direction is just "off baseline". */
 export const METRICS: Record<
   string,

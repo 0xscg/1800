@@ -1,4 +1,4 @@
-import type { MetricToday, SeriesPoint } from "./types";
+import type { Annotation, MetricToday, SeriesPoint } from "./types";
 
 // Deterministic pseudo-random so the mock dashboard is stable between reloads.
 function rng(seed: number) {
@@ -16,6 +16,8 @@ const BASES: Record<string, { base: number; noise: number }> = {
   recovery_score:   { base: 68,   noise: 15 },
   respiratory_rate: { base: 14.8, noise: 0.5 },
   steps:            { base: 9200, noise: 2600 },
+  active_kcal:      { base: 620,  noise: 180 },
+  hrv_sdnn_ms:      { base: 48,   noise: 8 },
   vo2max:           { base: 46.5, noise: 0.4 },
 };
 
@@ -51,4 +53,27 @@ export function mockToday(): MetricToday[] {
     );
     return { metric, day: last.day, value: last.value, mean30: last.mean30, sd30: last.sd30, z, spark };
   });
+}
+
+// ---- Annotations: in-memory store so tagging works fully offline/mock ----
+
+function isoDaysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+const annotationStore: Annotation[] = [
+  { day: isoDaysAgo(12), tag: "travel", note: "red-eye to SFO" },
+  { day: isoDaysAgo(6), tag: "alcohol", note: "" },
+  { day: isoDaysAgo(2), tag: "stress", note: "deadline week" },
+];
+
+export function mockAnnotations(): Annotation[] {
+  return [...annotationStore];
+}
+
+export function mockAddAnnotation(a: Annotation): Annotation {
+  annotationStore.push(a);
+  return a;
 }

@@ -5,10 +5,19 @@ package normalize
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
-
-	"github.com/sushan/longevity/internal/store"
 )
+
+// ErrBadSample marks client-side validation failures (vs. storage errors).
+var ErrBadSample = errors.New("bad sample")
+
+// MetricWriter is the slice of the store that normalize needs.
+// *store.Store satisfies it; tests use an in-memory fake.
+type MetricWriter interface {
+	UpsertDailyMetric(ctx context.Context, day time.Time, metric, source string, value float64) error
+}
 
 // WhoopSleep is the subset of the v2 sleep record we care about.
 type WhoopSleep struct {
@@ -34,7 +43,7 @@ func (s WhoopSleep) Day() time.Time {
 	return time.Date(s.End.Year(), s.End.Month(), s.End.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-func Sleep(ctx context.Context, st *store.Store, payload []byte) error {
+func Sleep(ctx context.Context, st MetricWriter, payload []byte) error {
 	var s WhoopSleep
 	if err := json.Unmarshal(payload, &s); err != nil {
 		return err
@@ -74,7 +83,7 @@ type WhoopRecovery struct {
 	} `json:"score"`
 }
 
-func Recovery(ctx context.Context, st *store.Store, payload []byte) error {
+func Recovery(ctx context.Context, st MetricWriter, payload []byte) error {
 	var r WhoopRecovery
 	if err := json.Unmarshal(payload, &r); err != nil {
 		return err
@@ -99,18 +108,30 @@ func Recovery(ctx context.Context, st *store.Store, payload []byte) error {
 // The shim pre-aggregates to daily values; keep the server dumb.
 type DeviceSample struct {
 	Day    string  `json:"day"`    // YYYY-MM-DD
-	Metric string  `json:"metric"` // steps | active_kcal | vo2max | hrv_sdnn_ms | resting_hr
+	Metric string  `json:"metric"` // see deviceMetrics; matches the OpenAPI enum
 	Value  float64 `json:"value"`
 }
 
-func Device(ctx context.Context, st *store.Store, samples []DeviceSample) error {
-	for _, s := range samples {
+// deviceMetrics mirrors the DeviceSample.metric enum in contracts/openapi.yaml.
+// Note hrv_sdnn_ms and hrv_rmssd_ms are distinct statistics and stay distinct here.
+var deviceMetrics = map[string]bool{
+	"steps": true, "active_kcal": true, "vo2max": true,
+	"hrv_sdnn_ms": true, "hrv_rmssd_ms": true, "resting_hr": true, "sleep_min": true,
+}
+
+// Device upserts a batch of shim samples. Malformed samples fail the whole batch
+// (the shim retries idempotently); nothing is silently dropped.
+func Device(ctx context.Context, st MetricWriter, samples []DeviceSample) error {
+	for i, s := range samples {
 		day, err := time.Parse("2006-01-02", s.Day)
 		if err != nil {
-			continue
+			return fmt.Errorf("%w %d: bad day %q", ErrBadSample, i, s.Day)
+		}
+		if !deviceMetrics[s.Metric] {
+			return fmt.Errorf("%w %d: unknown metric %q", ErrBadSample, i, s.Metric)
 		}
 		if err := st.UpsertDailyMetric(ctx, day, s.Metric, "watch", s.Value); err != nil {
-			return err
+			return fmt.Errorf("sample %d: %w", i, err)
 		}
 	}
 	return nil

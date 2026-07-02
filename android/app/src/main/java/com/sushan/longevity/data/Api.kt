@@ -53,6 +53,9 @@ object Api {
                 .header("Authorization", "Bearer ${BuildConfig.INGEST_TOKEN}")
                 .post(json.encodeToString(body).toRequestBody(jsonMedia))
                 .build()
-            http.newCall(req).execute().close()
+            http.newCall(req).execute().use { res ->
+                // Surface failures so WorkManager retries with backoff.
+                if (!res.isSuccessful) error("ingest failed: HTTP ${res.code}")
+            }
         }
 }

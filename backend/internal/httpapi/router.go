@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -29,7 +31,12 @@ func (a *API) Router() http.Handler {
 
 	// --- Whoop connect + webhook ---
 	r.Get("/v1/connect/whoop", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, a.Whoop.AuthorizeURL("local"), http.StatusFound)
+		state, err := a.Whoop.NewState()
+		if err != nil {
+			http.Error(w, "state", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, a.Whoop.AuthorizeURL(state), http.StatusFound)
 	})
 	r.Get("/v1/connect/whoop/callback", a.whoopCallback)
 	r.Post("/v1/webhooks/whoop", a.whoopWebhook)
@@ -60,13 +67,18 @@ func cors(next http.Handler) http.Handler {
 }
 
 func (a *API) whoopCallback(w http.ResponseWriter, r *http.Request) {
+	if !a.Whoop.ConsumeState(r.URL.Query().Get("state")) {
+		http.Error(w, "invalid state", http.StatusBadRequest)
+		return
+	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "missing code", http.StatusBadRequest)
 		return
 	}
 	if err := a.Whoop.Exchange(r.Context(), code); err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		log.Printf("whoop: code exchange failed: %v", err)
+		http.Error(w, "whoop token exchange failed", http.StatusBadGateway)
 		return
 	}
 	w.Write([]byte("Whoop connected. You can close this tab."))
@@ -100,30 +112,61 @@ func (a *API) whoopWebhook(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// handleWhoopEvent runs in the background after the webhook is acked.
+// GDPR: log event type / id / error class only — never payload contents.
 func (a *API) handleWhoopEvent(ctx context.Context, ev whoop.WebhookEvent) {
 	id := ev.IDString()
+	fail := func(stage string, err error) {
+		log.Printf("whoop event %s id=%s: %s failed: %v", ev.Type, id, stage, err)
+	}
 	switch ev.Type {
 	case "sleep.updated":
 		payload, err := a.Whoop.Get(ctx, "/activity/sleep/"+id)
 		if err != nil {
+			fail("fetch", err)
 			return
 		}
-		_ = a.Store.UpsertRawEvent(ctx, "whoop", "sleep", id, payload)
-		_ = normalize.Sleep(ctx, a.Store, payload)
+		if err := a.Store.UpsertRawEvent(ctx, "whoop", "sleep", id, payload); err != nil {
+			fail("raw upsert", err)
+			return
+		}
+		if err := normalize.Sleep(ctx, a.Store, payload); err != nil {
+			fail("normalize", err)
+		}
 	case "recovery.updated":
-		// v2 recovery events carry the UUID of the associated sleep.
-		payload, err := a.Whoop.Get(ctx, "/recovery/sleep/"+id) // confirm exact path in docs
+		// v2 recovery events carry the UUID of the associated sleep. There is
+		// no /recovery/sleep/{uuid} route: resolve sleep -> cycle_id -> recovery.
+		sleep, recovery, err := a.Whoop.GetRecoveryForSleep(ctx, id)
+		if sleep != nil {
+			// We fetched the sleep anyway; store it (idempotent upsert).
+			if err := a.Store.UpsertRawEvent(ctx, "whoop", "sleep", id, sleep); err != nil {
+				fail("sleep raw upsert", err)
+			} else if err := normalize.Sleep(ctx, a.Store, sleep); err != nil {
+				fail("sleep normalize", err)
+			}
+		}
 		if err != nil {
+			fail("fetch", err)
 			return
 		}
-		_ = a.Store.UpsertRawEvent(ctx, "whoop", "recovery", id, payload)
-		_ = normalize.Recovery(ctx, a.Store, payload)
+		if err := a.Store.UpsertRawEvent(ctx, "whoop", "recovery", id, recovery); err != nil {
+			fail("raw upsert", err)
+			return
+		}
+		if err := normalize.Recovery(ctx, a.Store, recovery); err != nil {
+			fail("normalize", err)
+		}
 	case "workout.updated":
 		payload, err := a.Whoop.Get(ctx, "/activity/workout/"+id)
 		if err != nil {
+			fail("fetch", err)
 			return
 		}
-		_ = a.Store.UpsertRawEvent(ctx, "whoop", "workout", id, payload)
+		if err := a.Store.UpsertRawEvent(ctx, "whoop", "workout", id, payload); err != nil {
+			fail("raw upsert", err)
+		}
+	default:
+		log.Printf("whoop event %s id=%s: ignored", ev.Type, id)
 	}
 }
 
@@ -142,10 +185,25 @@ func (a *API) ingestSamples(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	raw, _ := json.Marshal(req.Samples)
-	_ = a.Store.UpsertRawEvent(r.Context(), "device", "sample_batch", req.BatchID, raw)
+	if req.BatchID == "" {
+		http.Error(w, "batch_id is required", http.StatusBadRequest)
+		return
+	}
+	raw, err := json.Marshal(req.Samples)
+	if err != nil {
+		http.Error(w, "bad samples", http.StatusBadRequest)
+		return
+	}
+	if err := a.Store.UpsertRawEvent(r.Context(), "device", "sample_batch", req.BatchID, raw); err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
 	if err := normalize.Device(r.Context(), a.Store, req.Samples); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if errors.Is(err, normalize.ErrBadSample) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		} else {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+		}
 		return
 	}
 	writeJSON(w, map[string]int{"accepted": len(req.Samples)})

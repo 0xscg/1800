@@ -33,7 +33,13 @@ paths:
   /v1/annotations:
     get:
       summary: List context tags
-      responses: { "200": { description: OK } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Annotation" }
     post:
       summary: Tag a day (travel, illness, alcohol, ...)
       requestBody:
@@ -75,7 +81,10 @@ components:
         mean30: { type: number, nullable: true }
         sd30: { type: number, nullable: true }
         z: { type: number, nullable: true }
-        spark: { type: array, items: { type: number } }
+        spark:
+          type: array
+          items: { type: number }
+          description: Last 14 daily z-scores (not raw values), oldest first; 0 where undefined.
     SeriesPoint:
       type: object
       properties:
