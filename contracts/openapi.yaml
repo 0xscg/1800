@@ -1,0 +1,99 @@
+openapi: 3.0.3
+info:
+  title: Baseline API
+  version: 0.1.0
+  description: >
+    Thin longevity backend. Whoop arrives via OAuth + webhooks (server-side);
+    Apple Watch / Android arrives via the device shim posting daily aggregates.
+    Every read endpoint reports values against the user's own 30-day baseline.
+paths:
+  /v1/dashboard/today:
+    get:
+      summary: Latest value per metric with personal-baseline z-score and 14-day sparkline
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MetricToday" }
+  /v1/metrics/{metric}:
+    get:
+      summary: Daily series for one metric with rolling 30-day mean and sigma
+      parameters:
+        - { name: metric, in: path, required: true, schema: { type: string } }
+        - { name: days, in: query, schema: { type: integer, default: 90, maximum: 730 } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SeriesPoint" }
+  /v1/annotations:
+    get:
+      summary: List context tags
+      responses: { "200": { description: OK } }
+    post:
+      summary: Tag a day (travel, illness, alcohol, ...)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Annotation" }
+      responses: { "200": { description: Created } }
+  /v1/ingest/samples:
+    post:
+      summary: Device shim posts pre-aggregated daily values (HealthKit / Health Connect)
+      security: [ { deviceToken: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                batch_id: { type: string }
+                samples:
+                  type: array
+                  items: { $ref: "#/components/schemas/DeviceSample" }
+      responses: { "200": { description: Accepted } }
+  /v1/connect/whoop:
+    get: { summary: Redirect to Whoop OAuth consent, responses: { "302": { description: Redirect } } }
+  /v1/connect/whoop/callback:
+    get: { summary: OAuth code exchange, responses: { "200": { description: Connected } } }
+  /v1/webhooks/whoop:
+    post: { summary: Whoop v2 webhook receiver (HMAC-verified), responses: { "200": { description: Ack } } }
+components:
+  securitySchemes:
+    deviceToken: { type: http, scheme: bearer }
+  schemas:
+    MetricToday:
+      type: object
+      properties:
+        metric: { type: string }
+        day: { type: string, format: date }
+        value: { type: number }
+        mean30: { type: number, nullable: true }
+        sd30: { type: number, nullable: true }
+        z: { type: number, nullable: true }
+        spark: { type: array, items: { type: number } }
+    SeriesPoint:
+      type: object
+      properties:
+        day: { type: string, format: date }
+        value: { type: number }
+        mean30: { type: number, nullable: true }
+        sd30: { type: number, nullable: true }
+    Annotation:
+      type: object
+      required: [day, tag]
+      properties:
+        day: { type: string, format: date }
+        tag: { type: string }
+        note: { type: string }
+    DeviceSample:
+      type: object
+      required: [day, metric, value]
+      properties:
+        day: { type: string, format: date }
+        metric: { type: string, enum: [steps, active_kcal, vo2max, hrv_sdnn_ms, hrv_rmssd_ms, resting_hr, sleep_min] }
+        value: { type: number }

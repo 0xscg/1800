@@ -1,0 +1,119 @@
+/* Baseline — dark instrument. One idea everywhere: your value vs. your own 30-day band. */
+:root {
+  /* surfaces */
+  --ink: #0c1116;        /* page */
+  --panel: #131a21;      /* cards */
+  --panel-edge: #1e2731; /* hairlines */
+
+  /* text */
+  --text: #e7ecf0;
+  --text-dim: #8b98a5;
+  --text-faint: #566270;
+
+  /* the only two meaningful colors: in-band vs off-band */
+  --sage: #8fbca8;   /* within / favorable deviation */
+  --ember: #e0785c;  /* deviation that wants attention */
+  --band: #22303b;   /* the baseline band fill */
+
+  /* type */
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius: 10px;
+  --gap: 20px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { font-family: var(--font-display); font-weight: 500; margin: 0; }
+
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+.masthead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 36px;
+}
+.masthead h1 { font-size: 22px; letter-spacing: 0.01em; }
+.masthead .date { color: var(--text-dim); font-family: var(--font-data); font-size: 13px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--gap);
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-radius: var(--radius);
+  padding: 18px 18px 14px;
+}
+.card:focus-within, .card:hover { border-color: #2b3947; }
+
+.card .label {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.card .value { font-size: 34px; font-weight: 600; line-height: 1; }
+.card .unit { font-size: 13px; color: var(--text-faint); margin-left: 6px; }
+
+.dev { margin-top: 8px; font-size: 13px; }
+.dev.good { color: var(--sage); }
+.dev.warn { color: var(--ember); }
+.dev.flat { color: var(--text-dim); }
+
+/* deviation dots: 14 days of z, the card's quiet history */
+.dots { display: flex; gap: 4px; margin-top: 14px; }
+.dots i {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--band);
+}
+.dots i.good { background: var(--sage); }
+.dots i.warn { background: var(--ember); }
+
+.section { margin-top: 48px; }
+.section > h2 { font-size: 16px; color: var(--text-dim); margin-bottom: 16px; font-weight: 500; }
+
+.trend-card { padding: 22px; }
+.trend-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.trend-head h3 { font-size: 15px; }
+.trend-head .range { color: var(--text-faint); font-size: 12px; font-family: var(--font-data); }
+
+button, select, input {
+  font-family: var(--font-body);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-edge);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+button { cursor: pointer; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--sage); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
