@@ -27,7 +27,7 @@ type API struct {
 
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.Logger, middleware.Recoverer, cors)
+	r.Use(middleware.Logger, middleware.Recoverer, corsFor(a.Cfg.WebOrigin))
 
 	// --- Whoop connect + webhook ---
 	r.Get("/v1/connect/whoop", func(w http.ResponseWriter, r *http.Request) {
@@ -53,17 +53,22 @@ func (a *API) Router() http.Handler {
 	return r
 }
 
-func cors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*") // personal tool; tighten if it grows
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// corsFor allows only the configured web origin (WEB_ORIGIN). Health data is
+// GDPR special category — never wildcard this.
+func corsFor(origin string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (a *API) whoopCallback(w http.ResponseWriter, r *http.Request) {
@@ -105,69 +110,94 @@ func (a *API) whoopWebhook(w http.ResponseWriter, r *http.Request) {
 	// Ack before doing work; WHOOP retries on non-2xx and slow responses.
 	w.WriteHeader(http.StatusOK)
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		a.handleWhoopEvent(ctx, ev)
-	}()
+	go a.processWhoopEvent(ev)
 }
 
-// handleWhoopEvent runs in the background after the webhook is acked.
-// GDPR: log event type / id / error class only — never payload contents.
-func (a *API) handleWhoopEvent(ctx context.Context, ev whoop.WebhookEvent) {
+// whoopRetryWaits: backoff between attempts. Overridable in tests.
+// Deliberately in-process only — a durable queue table was considered and
+// deferred; an event lost to a full process crash is re-fetchable via backfill.
+var whoopRetryWaits = []time.Duration{5 * time.Second, 25 * time.Second}
+
+// processWhoopEvent retries handleWhoopEvent so a transient DB/WHOOP failure
+// doesn't permanently drop an already-acked webhook event. Fresh context per
+// attempt. GDPR: log type / id / stage only — never payload contents.
+func (a *API) processWhoopEvent(ev whoop.WebhookEvent) {
+	attempts := len(whoopRetryWaits) + 1
+	for attempt := 1; attempt <= attempts; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := a.handleWhoopEvent(ctx, ev)
+		cancel()
+		if err == nil {
+			return
+		}
+		if attempt < attempts {
+			log.Printf("whoop event %s id=%s: attempt %d/%d failed, retrying", ev.Type, ev.IDString(), attempt, attempts)
+			time.Sleep(whoopRetryWaits[attempt-1])
+		} else {
+			log.Printf("whoop event %s id=%s: attempt %d/%d failed, giving up", ev.Type, ev.IDString(), attempt, attempts)
+		}
+	}
+}
+
+// handleWhoopEvent does one processing attempt after the webhook is acked.
+// Returns the first error so the caller can retry (all writes are idempotent).
+// GDPR: log event type / id / stage / error class only — never payload contents.
+func (a *API) handleWhoopEvent(ctx context.Context, ev whoop.WebhookEvent) error {
 	id := ev.IDString()
-	fail := func(stage string, err error) {
+	fail := func(stage string, err error) error {
 		log.Printf("whoop event %s id=%s: %s failed: %v", ev.Type, id, stage, err)
+		return err
 	}
 	switch ev.Type {
 	case "sleep.updated":
 		payload, err := a.Whoop.Get(ctx, "/activity/sleep/"+id)
 		if err != nil {
-			fail("fetch", err)
-			return
+			return fail("fetch", err)
 		}
 		if err := a.Store.UpsertRawEvent(ctx, "whoop", "sleep", id, payload); err != nil {
-			fail("raw upsert", err)
-			return
+			return fail("raw upsert", err)
 		}
 		if err := normalize.Sleep(ctx, a.Store, payload); err != nil {
-			fail("normalize", err)
+			return fail("normalize", err)
 		}
 	case "recovery.updated":
 		// v2 recovery events carry the UUID of the associated sleep. There is
 		// no /recovery/sleep/{uuid} route: resolve sleep -> cycle_id -> recovery.
 		sleep, recovery, err := a.Whoop.GetRecoveryForSleep(ctx, id)
+		var wakeDay time.Time // zero → normalize falls back to created_at
 		if sleep != nil {
 			// We fetched the sleep anyway; store it (idempotent upsert).
 			if err := a.Store.UpsertRawEvent(ctx, "whoop", "sleep", id, sleep); err != nil {
-				fail("sleep raw upsert", err)
-			} else if err := normalize.Sleep(ctx, a.Store, sleep); err != nil {
-				fail("sleep normalize", err)
+				return fail("sleep raw upsert", err)
+			}
+			if err := normalize.Sleep(ctx, a.Store, sleep); err != nil {
+				return fail("sleep normalize", err)
+			}
+			if d, err := normalize.SleepWakeDay(sleep); err == nil {
+				wakeDay = d
 			}
 		}
 		if err != nil {
-			fail("fetch", err)
-			return
+			return fail("fetch", err)
 		}
 		if err := a.Store.UpsertRawEvent(ctx, "whoop", "recovery", id, recovery); err != nil {
-			fail("raw upsert", err)
-			return
+			return fail("raw upsert", err)
 		}
-		if err := normalize.Recovery(ctx, a.Store, recovery); err != nil {
-			fail("normalize", err)
+		if err := normalize.Recovery(ctx, a.Store, recovery, wakeDay); err != nil {
+			return fail("normalize", err)
 		}
 	case "workout.updated":
 		payload, err := a.Whoop.Get(ctx, "/activity/workout/"+id)
 		if err != nil {
-			fail("fetch", err)
-			return
+			return fail("fetch", err)
 		}
 		if err := a.Store.UpsertRawEvent(ctx, "whoop", "workout", id, payload); err != nil {
-			fail("raw upsert", err)
+			return fail("raw upsert", err)
 		}
 	default:
 		log.Printf("whoop event %s id=%s: ignored", ev.Type, id)
 	}
+	return nil
 }
 
 func (a *API) ingestSamples(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +217,12 @@ func (a *API) ingestSamples(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.BatchID == "" {
 		http.Error(w, "batch_id is required", http.StatusBadRequest)
+		return
+	}
+	// Validate the WHOLE batch before persisting anything: an invalid batch
+	// must leave no raw_events row and no partial daily_metrics.
+	if err := normalize.ValidateDeviceSamples(req.Samples); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	raw, err := json.Marshal(req.Samples)

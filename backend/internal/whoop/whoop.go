@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,10 @@ type Client struct {
 	// Overridable in tests so Get's 401-retry can be exercised without a DB.
 	getToken func(ctx context.Context, force bool) (string, error)
 
+	// now is the clock used for webhook timestamp checks; time.Now by default,
+	// injectable in tests.
+	now func() time.Time
+
 	mu     sync.Mutex
 	states map[string]time.Time // pending OAuth states -> expiry
 }
@@ -66,7 +71,13 @@ func New(id, secret, redirect string, st *store.Store) *Client {
 		states: map[string]time.Time{},
 	}
 	c.getToken = c.accessToken
+	c.now = time.Now
 	return c
+}
+
+// SetTokenSource overrides the token source used by Get (tests only).
+func (c *Client) SetTokenSource(fn func(ctx context.Context, force bool) (string, error)) {
+	c.getToken = fn
 }
 
 // NewState mints a single-use random state for the OAuth redirect.
@@ -172,8 +183,11 @@ func (c *Client) refreshLocked(ctx context.Context, tx dbtx, force bool) (string
 	err := tx.QueryRow(ctx,
 		`SELECT access_token, refresh_token, expires_at FROM oauth_tokens WHERE provider='whoop' FOR UPDATE`,
 	).Scan(&access, &refresh, &expires)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", errors.New("whoop not connected: visit /v1/connect/whoop")
+	}
+	if err != nil {
+		return "", err
 	}
 
 	if !force && time.Until(expires) > 5*time.Minute {
@@ -291,12 +305,25 @@ func (c *Client) GetRecoveryForSleep(ctx context.Context, sleepID string) ([]byt
 	return sleep, rec, nil
 }
 
+// maxWebhookSkew bounds how far the signed timestamp may drift from our clock
+// (either direction), limiting the replay window for captured signatures.
+const maxWebhookSkew = 5 * time.Minute
+
 // VerifySignature checks the webhook HMAC:
 // base64(HMAC-SHA256(client_secret, timestamp + raw_body)) == X-WHOOP-Signature,
 // where timestamp is the X-WHOOP-Signature-Timestamp header (ms since epoch).
+// Timestamps more than 5 minutes from now (either way) are rejected.
 // Verified against developer.whoop.com/docs/developing/webhooks (2026-07-02).
 func (c *Client) VerifySignature(timestamp string, body []byte, signature string) bool {
 	if timestamp == "" || signature == "" {
+		return false
+	}
+	ms, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	skew := c.now().Sub(time.UnixMilli(ms))
+	if skew > maxWebhookSkew || skew < -maxWebhookSkew {
 		return false
 	}
 	mac := hmac.New(sha256.New, []byte(c.Secret))

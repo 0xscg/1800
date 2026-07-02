@@ -9,6 +9,7 @@ type Config struct {
 	WhoopClientSecret string
 	WhoopRedirectURL  string
 	DeviceIngestToken string
+	WebOrigin         string
 }
 
 func Load() Config {
@@ -25,5 +26,6 @@ func Load() Config {
 		WhoopClientSecret: os.Getenv("WHOOP_CLIENT_SECRET"),
 		WhoopRedirectURL:  get("WHOOP_REDIRECT_URL", "http://localhost:8080/v1/connect/whoop/callback"),
 		DeviceIngestToken: get("DEVICE_INGEST_TOKEN", "change-me"),
+		WebOrigin:         get("WEB_ORIGIN", "http://localhost:5173"),
 	}
 }

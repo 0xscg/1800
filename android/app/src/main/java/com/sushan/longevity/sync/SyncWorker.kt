@@ -9,10 +9,14 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.health.connect.client.HealthConnectClient
 import androidx.work.WorkerParameters
 import com.sushan.longevity.data.Api
+import com.sushan.longevity.data.HttpException
+import java.io.IOException
 import java.time.Duration
 import java.time.LocalDate
+import kotlinx.coroutines.CancellationException
 
 /**
  * Background sync: read Health Connect, POST daily aggregates.
@@ -22,14 +26,30 @@ import java.time.LocalDate
 class SyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
     override suspend fun doWork(): Result {
+        // Permanent conditions: no Health Connect, or access not granted. Skip
+        // quietly instead of retrying forever — MainActivity re-asks on launch.
+        if (HealthConnectClient.getSdkStatus(applicationContext) != HealthConnectClient.SDK_AVAILABLE) {
+            return Result.success()
+        }
+        val reader = HealthConnectReader(applicationContext)
+        val granted = reader.client().permissionController.getGrantedPermissions()
+        if (!granted.containsAll(reader.permissions)) return Result.success()
+
         return try {
-            val samples = HealthConnectReader(applicationContext).readDailySamples(days = 7)
+            val samples = reader.readDailySamples(days = 7)
             if (samples.isNotEmpty()) {
                 // Stable, date-based batch id: every run on the same day resends the
                 // same logical batch, so retries and re-syncs stay idempotent.
                 Api.postSamples(batchId = "hc-${LocalDate.now()}", samples = samples)
             }
             Result.success()
+        } catch (e: CancellationException) {
+            throw e // let the coroutine machinery handle stops
+        } catch (e: HttpException) {
+            // 4xx is our bug (bad payload/auth) — retrying won't fix it.
+            if (e.code in 400..499) Result.failure() else Result.retry()
+        } catch (e: IOException) {
+            Result.retry() // transient network trouble
         } catch (e: Exception) {
             // Never log health values; the exception path carries none.
             Result.retry()

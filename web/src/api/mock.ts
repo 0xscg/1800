@@ -1,5 +1,10 @@
 import type { Annotation, MetricToday, SeriesPoint } from "./types";
 
+/** LOCAL calendar day as YYYY-MM-DD (metrics are keyed by local day, not UTC). */
+export function localDay(d: Date = new Date()): string {
+  return d.toLocaleDateString("en-CA"); // en-CA formats as YYYY-MM-DD
+}
+
 // Deterministic pseudo-random so the mock dashboard is stable between reloads.
 function rng(seed: number) {
   return () => {
@@ -32,11 +37,13 @@ export function mockSeries(metric: string, days: number): SeriesPoint[] {
     const value = cfg.base + drift + (rand() - 0.5) * cfg.noise;
     const d = new Date(today);
     d.setDate(d.getDate() - i);
+    // First 2 days have no baseline yet — matches live "building baseline" behavior.
+    const hasBaseline = i <= days - 2;
     out.push({
-      day: d.toISOString().slice(0, 10),
+      day: localDay(d),
       value: Math.round(value * 10) / 10,
-      mean30: Math.round((cfg.base + drift * 0.6) * 10) / 10,
-      sd30: Math.round(cfg.noise * 0.55 * 10) / 10,
+      mean30: hasBaseline ? Math.round((cfg.base + drift * 0.6) * 10) / 10 : null,
+      sd30: hasBaseline ? Math.round(cfg.noise * 0.55 * 10) / 10 : null,
     });
   }
   return out;
@@ -60,7 +67,7 @@ export function mockToday(): MetricToday[] {
 function isoDaysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
+  return localDay(d);
 }
 
 const annotationStore: Annotation[] = [

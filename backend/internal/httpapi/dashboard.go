@@ -48,13 +48,15 @@ func (a *API) today(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sparklines: one query for all metrics' last 14 z-scores.
+	// Sparklines: exactly the last 14 CALENDAR days per metric, oldest first,
+	// 0 where a day has no score (matches the contract description).
 	spark := map[string][]float64{}
 	srows, err := a.Store.Pool.Query(ctx, `
-		SELECT metric, z FROM (
-			SELECT metric, day, z, ROW_NUMBER() OVER (PARTITION BY metric ORDER BY day DESC) rn
-			FROM metric_scored
-		) t WHERE rn <= 14 ORDER BY metric, day ASC`)
+		SELECT m.metric, s.z
+		FROM (SELECT DISTINCT metric FROM metric_scored) m
+		CROSS JOIN generate_series(CURRENT_DATE - 13, CURRENT_DATE, interval '1 day') d(day)
+		LEFT JOIN metric_scored s ON s.metric = m.metric AND s.day = d.day::date
+		ORDER BY m.metric, d.day ASC`)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -103,7 +105,7 @@ func (a *API) series(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := a.Store.Pool.Query(r.Context(), `
 		SELECT day, value, mean30, sd30 FROM metric_scored
-		WHERE metric = $1 AND day >= (CURRENT_DATE - $2::int)
+		WHERE metric = $1 AND day > (CURRENT_DATE - $2::int)
 		ORDER BY day ASC`, metric, days)
 	if err != nil {
 		http.Error(w, err.Error(), 500)

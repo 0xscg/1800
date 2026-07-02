@@ -21,9 +21,10 @@ type MetricWriter interface {
 
 // WhoopSleep is the subset of the v2 sleep record we care about.
 type WhoopSleep struct {
-	ID    string    `json:"id"`
-	End   time.Time `json:"end"`
-	Score struct {
+	ID             string    `json:"id"`
+	End            time.Time `json:"end"`
+	TimezoneOffset string    `json:"timezone_offset"` // e.g. "+01:00", "-05:00"
+	Score          struct {
 		StageSummary struct {
 			TotalInBedMilli      int64 `json:"total_in_bed_time_milli"`
 			TotalAwakeMilli      int64 `json:"total_awake_time_milli"`
@@ -38,9 +39,41 @@ type WhoopSleep struct {
 	Nap bool `json:"nap"`
 }
 
-// Day attribution: the sleep belongs to the day you woke up.
+// Day attribution: the sleep belongs to the LOCAL day you woke up.
+// WHOOP sends end in UTC plus a timezone_offset like "+01:00"; a 00:30 BST wake
+// is 23:30 UTC the previous day and must still land on the local wake day.
 func (s WhoopSleep) Day() time.Time {
-	return time.Date(s.End.Year(), s.End.Month(), s.End.Day(), 0, 0, 0, 0, time.UTC)
+	end := s.End
+	if off, ok := parseTZOffset(s.TimezoneOffset); ok {
+		end = end.In(time.FixedZone("whoop", off))
+	}
+	return time.Date(end.Year(), end.Month(), end.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// parseTZOffset parses "+hh:mm" / "-hh:mm" into seconds east of UTC.
+func parseTZOffset(s string) (int, bool) {
+	if len(s) != 6 || (s[0] != '+' && s[0] != '-') || s[3] != ':' {
+		return 0, false
+	}
+	var h, m int
+	if _, err := fmt.Sscanf(s[1:], "%02d:%02d", &h, &m); err != nil || h > 23 || m > 59 {
+		return 0, false
+	}
+	sec := h*3600 + m*60
+	if s[0] == '-' {
+		sec = -sec
+	}
+	return sec, true
+}
+
+// SleepWakeDay extracts the local wake day from a raw sleep payload,
+// for callers that need to key an associated record (recovery) to it.
+func SleepWakeDay(payload []byte) (time.Time, error) {
+	var s WhoopSleep
+	if err := json.Unmarshal(payload, &s); err != nil {
+		return time.Time{}, err
+	}
+	return s.Day(), nil
 }
 
 func Sleep(ctx context.Context, st MetricWriter, payload []byte) error {
@@ -83,12 +116,18 @@ type WhoopRecovery struct {
 	} `json:"score"`
 }
 
-func Recovery(ctx context.Context, st MetricWriter, payload []byte) error {
+// Recovery upserts recovery metrics keyed to wakeDay — the LOCAL wake day of
+// the associated sleep (recovery belongs to the same day as its sleep). Pass
+// the zero time when the sleep isn't available; created_at is the fallback.
+func Recovery(ctx context.Context, st MetricWriter, payload []byte, wakeDay time.Time) error {
 	var r WhoopRecovery
 	if err := json.Unmarshal(payload, &r); err != nil {
 		return err
 	}
-	day := time.Date(r.CreatedAt.Year(), r.CreatedAt.Month(), r.CreatedAt.Day(), 0, 0, 0, 0, time.UTC)
+	day := wakeDay
+	if day.IsZero() {
+		day = time.Date(r.CreatedAt.Year(), r.CreatedAt.Month(), r.CreatedAt.Day(), 0, 0, 0, 0, time.UTC)
+	}
 	put := func(metric string, v *float64) error {
 		if v == nil {
 			return nil
@@ -119,17 +158,29 @@ var deviceMetrics = map[string]bool{
 	"hrv_sdnn_ms": true, "hrv_rmssd_ms": true, "resting_hr": true, "sleep_min": true,
 }
 
-// Device upserts a batch of shim samples. Malformed samples fail the whole batch
-// (the shim retries idempotently); nothing is silently dropped.
-func Device(ctx context.Context, st MetricWriter, samples []DeviceSample) error {
+// ValidateDeviceSamples checks the whole batch (day format + metric enum)
+// without writing anything. Callers validate BEFORE persisting so an invalid
+// batch leaves no trace (no raw_events row, no partial daily_metrics).
+func ValidateDeviceSamples(samples []DeviceSample) error {
 	for i, s := range samples {
-		day, err := time.Parse("2006-01-02", s.Day)
-		if err != nil {
+		if _, err := time.Parse("2006-01-02", s.Day); err != nil {
 			return fmt.Errorf("%w %d: bad day %q", ErrBadSample, i, s.Day)
 		}
 		if !deviceMetrics[s.Metric] {
 			return fmt.Errorf("%w %d: unknown metric %q", ErrBadSample, i, s.Metric)
 		}
+	}
+	return nil
+}
+
+// Device upserts a batch of shim samples. The batch must already be valid
+// (ValidateDeviceSamples); it is re-checked here so replays stay safe.
+func Device(ctx context.Context, st MetricWriter, samples []DeviceSample) error {
+	if err := ValidateDeviceSamples(samples); err != nil {
+		return err
+	}
+	for i, s := range samples {
+		day, _ := time.Parse("2006-01-02", s.Day)
 		if err := st.UpsertDailyMetric(ctx, day, s.Metric, "watch", s.Value); err != nil {
 			return fmt.Errorf("sample %d: %w", i, err)
 		}

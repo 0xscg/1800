@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -26,14 +28,19 @@ func newTestClient() *Client {
 // base64(HMAC-SHA256(secret, timestamp + raw_body)). No official test vector is
 // published, so we use a synthetic one computed with the same formula.
 
+func sign(secret, ts string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + string(body)))
+	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
+}
+
 func TestVerifySignature(t *testing.T) {
 	c := newTestClient()
 	body := []byte(`{"user_id":10129,"id":"84cbb4e8-1b3f-44e5-b5a7-4b1d0a4f7a4c","type":"sleep.updated","trace_id":"t"}`)
 	ts := "1751414400000" // ms since epoch, as WHOOP sends
+	c.now = func() time.Time { return time.UnixMilli(1751414400000) }
 
-	mac := hmac.New(sha256.New, []byte(c.Secret))
-	mac.Write([]byte(ts + string(body)))
-	good := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	good := sign(c.Secret, ts, body)
 
 	if !c.VerifySignature(ts, body, good) {
 		t.Fatal("valid signature rejected")
@@ -46,6 +53,37 @@ func TestVerifySignature(t *testing.T) {
 	}
 	if c.VerifySignature(ts, body, "") || c.VerifySignature("", body, good) {
 		t.Fatal("accepted empty signature or timestamp")
+	}
+}
+
+func TestVerifySignatureRejectsSkewedTimestamps(t *testing.T) {
+	c := newTestClient()
+	body := []byte(`{"type":"sleep.updated"}`)
+	now := time.UnixMilli(1751414400000)
+	c.now = func() time.Time { return now }
+
+	verifyAt := func(ts time.Time) bool {
+		s := fmt.Sprintf("%d", ts.UnixMilli())
+		return c.VerifySignature(s, body, sign(c.Secret, s, body))
+	}
+
+	if !verifyAt(now) {
+		t.Fatal("rejected timestamp == now")
+	}
+	if !verifyAt(now.Add(-4 * time.Minute)) {
+		t.Fatal("rejected timestamp 4m in the past (within tolerance)")
+	}
+	if !verifyAt(now.Add(4 * time.Minute)) {
+		t.Fatal("rejected timestamp 4m in the future (within tolerance)")
+	}
+	if verifyAt(now.Add(-6 * time.Minute)) {
+		t.Fatal("accepted timestamp 6m in the past (replay window)")
+	}
+	if verifyAt(now.Add(6 * time.Minute)) {
+		t.Fatal("accepted timestamp 6m in the future")
+	}
+	if c.VerifySignature("not-a-number", body, sign(c.Secret, "not-a-number", body)) {
+		t.Fatal("accepted non-numeric timestamp")
 	}
 }
 
@@ -193,6 +231,39 @@ func TestRefreshRotation(t *testing.T) {
 	rowLock.Unlock()
 	if err != nil || tok != "access-2" || row.refresh != "refresh-2" {
 		t.Fatalf("forced refresh: tok=%s refresh=%s err=%v", tok, row.refresh, err)
+	}
+}
+
+// --- refreshLocked error mapping ----------------------------------------------
+
+type errRow struct{ err error }
+
+func (e errRow) Scan(dest ...any) error { return e.err }
+
+type errTx struct{ err error }
+
+func (e errTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return errRow{e.err}
+}
+
+func (e errTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+
+func TestRefreshLockedErrorMapping(t *testing.T) {
+	c := newTestClient()
+
+	// No token row at all → the friendly "not connected" message.
+	_, err := c.refreshLocked(context.Background(), errTx{pgx.ErrNoRows}, false)
+	if err == nil || !strings.Contains(err.Error(), "whoop not connected") {
+		t.Fatalf("ErrNoRows: got %v, want 'whoop not connected'", err)
+	}
+
+	// Any other scan error must surface verbatim, not be masked.
+	dbErr := errors.New("connection reset by peer")
+	_, err = c.refreshLocked(context.Background(), errTx{dbErr}, false)
+	if !errors.Is(err, dbErr) {
+		t.Fatalf("scan error: got %v, want it returned verbatim", err)
 	}
 }
 

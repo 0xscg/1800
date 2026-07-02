@@ -8,8 +8,10 @@ import { METRICS } from "../../api/types";
 import { token } from "../../design/palette";
 
 interface Row extends SeriesPoint {
-  bandLow: number | null;
-  bandHigh: number | null;
+  // Always numeric: recharts' stack-group domain coerces nulls to 0 and would
+  // drag the Y-domain to zero. Null-baseline rows get a zero-height band at value.
+  bandLow: number;
+  bandHigh: number;
 }
 
 const DAY_CHOICES = [30, 90, 180, 365] as const;
@@ -48,8 +50,8 @@ export function TrendChart({
         setRows(
           pts.map((p) => ({
             ...p,
-            bandLow: p.mean30 != null && p.sd30 != null ? p.mean30 - p.sd30 : null,
-            bandHigh: p.mean30 != null && p.sd30 != null ? p.mean30 + p.sd30 : null,
+            bandLow: p.mean30 != null && p.sd30 != null ? p.mean30 - p.sd30 : p.value,
+            bandHigh: p.mean30 != null && p.sd30 != null ? p.mean30 + p.sd30 : p.value,
           }))
         );
       })
@@ -64,7 +66,8 @@ export function TrendChart({
     return annotations.filter((a) => daysInRange.has(a.day));
   }, [rows, annotations]);
 
-  const faint = token("text-faint");
+  const faint = token("text-faint"); // line strokes only — too low-contrast for text
+  const dim = token("text-dim"); // informational text (≥4.5:1 on panel)
 
   return (
     <div className="card trend-card">
@@ -104,12 +107,12 @@ export function TrendChart({
           <ComposedChart data={rows} margin={{ top: 18, right: 6, left: -14, bottom: 0 }}>
             <XAxis
               dataKey="day"
-              tick={{ fill: faint, fontSize: 11, fontFamily: "JetBrains Mono" }}
+              tick={{ fill: dim, fontSize: 11, fontFamily: "JetBrains Mono" }}
               tickFormatter={(d: string) => d.slice(5)}
               axisLine={false} tickLine={false} minTickGap={40}
             />
             <YAxis
-              tick={{ fill: faint, fontSize: 11, fontFamily: "JetBrains Mono" }}
+              tick={{ fill: dim, fontSize: 11, fontFamily: "JetBrains Mono" }}
               axisLine={false} tickLine={false} domain={["auto", "auto"]} width={54}
             />
             <Tooltip
@@ -125,9 +128,7 @@ export function TrendChart({
             {/* baseline band: two stacked areas so only the σ-width is filled */}
             <Area dataKey="bandLow" stackId="band" stroke="none" fill="transparent" isAnimationActive={false} legendType="none" tooltipType="none" />
             <Area
-              dataKey={(r: Row) =>
-                r.bandHigh != null && r.bandLow != null ? r.bandHigh - r.bandLow : null
-              }
+              dataKey={(r: Row) => r.bandHigh - r.bandLow}
               stackId="band" stroke="none" fill={token("band")} fillOpacity={0.9} isAnimationActive={false}
               name="baseline band"
             />
@@ -139,7 +140,7 @@ export function TrendChart({
                 stroke={faint}
                 strokeDasharray="2 3"
                 label={{
-                  value: a.tag, position: "top", fill: faint,
+                  value: a.tag, position: "top", fill: dim,
                   fontSize: 10, fontFamily: "JetBrains Mono",
                 }}
               />

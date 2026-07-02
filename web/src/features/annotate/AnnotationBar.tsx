@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Annotation } from "../../api/types";
 import { postAnnotation } from "../../api/client";
+import { localDay } from "../../api/mock";
 
 const TAGS = ["travel", "illness", "alcohol", "late_meal", "stress"] as const;
 
@@ -18,16 +19,28 @@ export function AnnotationBar({ annotations, onSaved }: Props) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function tagToday(tag: string) {
-    const day = new Date().toISOString().slice(0, 10);
+    // A newer confirmation must not be wiped by an older timer.
+    if (feedbackTimer.current !== null) clearTimeout(feedbackTimer.current);
+    const day = localDay(); // metrics are keyed by LOCAL calendar day
     setSaving(tag);
-    await postAnnotation({ day, tag, note: note.trim() });
-    setSaving(null);
-    setNote("");
-    setSaved(tag);
-    onSaved();
-    setTimeout(() => setSaved(null), 1800);
+    setError(null);
+    setSaved(null);
+    try {
+      await postAnnotation({ day, tag, note: note.trim() });
+      setNote("");
+      setSaved(tag);
+      onSaved();
+      feedbackTimer.current = setTimeout(() => setSaved(null), 1800);
+    } catch {
+      setError("Couldn’t save the tag. Try again.");
+      feedbackTimer.current = setTimeout(() => setError(null), 4000);
+    } finally {
+      setSaving(null);
+    }
   }
 
   const recent = [...annotations]
@@ -57,6 +70,12 @@ export function AnnotationBar({ annotations, onSaved }: Props) {
           style={{ flex: "1 1 240px", minWidth: 200 }}
         />
       </div>
+
+      {error ? (
+        <div className="dev warn" role="alert" style={{ marginTop: 8 }}>
+          {error}
+        </div>
+      ) : null}
 
       {recent.length > 0 && (
         <ul className="annotation-list">

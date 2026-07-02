@@ -79,7 +79,7 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 500; margin: 0; }
   margin-bottom: 10px;
 }
 .card .value { font-size: 34px; font-weight: 600; line-height: 1; }
-.card .unit { font-size: 13px; color: var(--text-faint); margin-left: 6px; }
+.card .unit { font-size: 13px; color: var(--text-dim); margin-left: 6px; }
 
 .dev { margin-top: 8px; font-size: 13px; }
 .dev.good { color: var(--sage); }
@@ -101,7 +101,7 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 500; margin: 0; }
 .trend-card { padding: 22px; }
 .trend-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
 .trend-head h3 { font-size: 15px; }
-.trend-head .range { color: var(--text-faint); font-size: 12px; font-family: var(--font-data); }
+.trend-head .range { color: var(--text-dim); font-size: 12px; font-family: var(--font-data); }
 
 button, select, input {
   font-family: var(--font-body);
@@ -137,6 +137,17 @@ button.metric-card.selected { border-color: var(--sage); }
   font-family: var(--font-data);
   font-size: 12px;
   color: var(--text-dim);
+  /* ≥44px touch target via a transparent hit area — visual weight unchanged */
+  position: relative;
+}
+.range-picker button::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: max(100%, 44px);
+  height: 44px;
 }
 .range-picker button.active {
   color: var(--text);
@@ -170,6 +181,6 @@ button.metric-card.selected { border-color: var(--sage); }
   border-bottom: 1px solid var(--panel-edge);
   padding-bottom: 6px;
 }
-.annotation-list .ann-day { color: var(--text-faint); font-size: 12px; }
+.annotation-list .ann-day { color: var(--text-dim); font-size: 12px; }
 .annotation-list .ann-tag { color: var(--text); }
 .annotation-list .ann-note { color: var(--text-dim); }

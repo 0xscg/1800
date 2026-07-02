@@ -63,10 +63,13 @@ fun DashboardScreen() {
     val context = LocalContext.current
     var metrics by remember { mutableStateOf<List<MetricToday>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
+    var unreachable by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(refreshKey) {
-        metrics = Api.today()
+        val fetched = Api.today()
+        unreachable = fetched == null
+        metrics = fetched ?: emptyList()
         loaded = true
     }
 
@@ -102,7 +105,12 @@ fun DashboardScreen() {
             }
         }
 
-        if (loaded && metrics.isEmpty()) {
+        if (unreachable) {
+            androidx.compose.material3.Text(
+                "Backend unreachable. Pull data will resume when it's back.",
+                color = TextDim,
+            )
+        } else if (loaded && metrics.isEmpty()) {
             androidx.compose.material3.Text(
                 "No data yet. Grant Health Connect access and let the first sync run.",
                 color = TextDim,
@@ -151,9 +159,11 @@ private fun MetricCard(m: MetricToday) {
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Newest day sits on the right; pad missing days on the oldest side.
             val recent = m.spark.takeLast(14)
+            val pad = 14 - recent.size
             repeat(14) { i ->
-                val z = recent.getOrNull(i)
+                val z = recent.getOrNull(i - pad)
                 Box(
                     Modifier.size(8.dp).background(
                         if (z == null) Band else zColor(z, dir).copy(
@@ -167,7 +177,7 @@ private fun MetricCard(m: MetricToday) {
     }
 }
 
-/** Quiet value line, no axes, no animation — instrument, not showpiece. */
+/** Quiet z-score line, no axes, no animation — instrument, not showpiece. */
 @Composable
 private fun Sparkline(values: List<Double>) {
     Canvas(Modifier.fillMaxWidth().height(28.dp)) {

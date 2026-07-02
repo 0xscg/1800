@@ -29,16 +29,26 @@ private data class SamplePayload(val day: String, val metric: String, val value:
 @Serializable
 private data class IngestBody(val batch_id: String, val samples: List<SamplePayload>)
 
+/** Non-2xx ingest response; lets callers decide between retry and give-up. */
+class HttpException(val code: Int) : Exception("HTTP $code")
+
 object Api {
     private val http = OkHttpClient()
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMedia = "application/json".toMediaType()
 
-    suspend fun today(): List<MetricToday> = withContext(Dispatchers.IO) {
-        val req = Request.Builder().url("${BuildConfig.API_BASE}/v1/dashboard/today").build()
-        http.newCall(req).execute().use { res ->
-            if (!res.isSuccessful) return@withContext emptyList()
-            json.decodeFromString(res.body!!.string())
+    /** Returns null when the backend is unreachable or replies with garbage. */
+    suspend fun today(): List<MetricToday>? = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("${BuildConfig.API_BASE}/v1/dashboard/today").build()
+            http.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return@withContext null
+                json.decodeFromString<List<MetricToday>>(res.body!!.string())
+            }
+        } catch (e: java.io.IOException) {
+            null
+        } catch (e: kotlinx.serialization.SerializationException) {
+            null
         }
     }
 
@@ -54,8 +64,9 @@ object Api {
                 .post(json.encodeToString(body).toRequestBody(jsonMedia))
                 .build()
             http.newCall(req).execute().use { res ->
-                // Surface failures so WorkManager retries with backoff.
-                if (!res.isSuccessful) error("ingest failed: HTTP ${res.code}")
+                // Surface failures with the status code so the worker can decide
+                // between retry (5xx/network) and give-up (4xx).
+                if (!res.isSuccessful) throw HttpException(res.code)
             }
         }
 }
