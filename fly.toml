@@ -1,0 +1,25 @@
+# Fly.io app: Go API + built web app in one machine.
+# First-time setup (interactive, run yourself):
+#   flyctl launch --no-deploy --copy-config --name baseline-longevity
+#   flyctl postgres create / attach   (sets DATABASE_URL)
+#   flyctl secrets set WHOOP_CLIENT_ID=... WHOOP_CLIENT_SECRET=... \
+#     WHOOP_REDIRECT_URL=https://<app>.fly.dev/v1/connect/whoop/callback \
+#     DEVICE_INGEST_TOKEN=... WEB_ORIGIN=https://<app>.fly.dev
+app = "baseline-longevity"
+primary_region = "lhr"
+
+[build]
+
+[deploy]
+  release_command = "/app/migrate /app/migrations"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"   # webhooks must always be reachable
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

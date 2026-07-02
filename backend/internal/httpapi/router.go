@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -50,7 +52,26 @@ func (a *API) Router() http.Handler {
 	r.Get("/v1/annotations", a.listAnnotations)
 	r.Post("/v1/annotations", a.createAnnotation)
 
+	// --- Static web app (same-origin deploy) ---
+	if a.Cfg.WebDist != "" {
+		r.NotFound(spaHandler(a.Cfg.WebDist))
+	}
+
 	return r
+}
+
+// spaHandler serves the built web app: real files as-is, everything else
+// falls back to index.html (client-side routing).
+func spaHandler(dist string) http.HandlerFunc {
+	fs := http.FileServer(http.Dir(dist))
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := filepath.Join(dist, filepath.Clean("/"+r.URL.Path))
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			fs.ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(dist, "index.html"))
+	}
 }
 
 // corsFor allows only the configured web origin (WEB_ORIGIN). Health data is

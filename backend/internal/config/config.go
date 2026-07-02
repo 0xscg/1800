@@ -10,6 +10,7 @@ type Config struct {
 	WhoopRedirectURL  string
 	DeviceIngestToken string
 	WebOrigin         string
+	WebDist           string // if set, serve the built web app from this dir
 }
 
 func Load() Config {
@@ -27,5 +28,6 @@ func Load() Config {
 		WhoopRedirectURL:  get("WHOOP_REDIRECT_URL", "http://localhost:8080/v1/connect/whoop/callback"),
 		DeviceIngestToken: get("DEVICE_INGEST_TOKEN", "change-me"),
 		WebOrigin:         get("WEB_ORIGIN", "http://localhost:5173"),
+		WebDist:           os.Getenv("WEB_DIST"),
 	}
 }
