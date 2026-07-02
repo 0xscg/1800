@@ -1,11 +1,11 @@
 # Fly.io app: Go API + built web app in one machine.
 # First-time setup (interactive, run yourself):
-#   flyctl launch --no-deploy --copy-config --name baseline-longevity
+#   flyctl launch --no-deploy --copy-config --name 1800
 #   flyctl postgres create / attach   (sets DATABASE_URL)
 #   flyctl secrets set WHOOP_CLIENT_ID=... WHOOP_CLIENT_SECRET=... \
 #     WHOOP_REDIRECT_URL=https://<app>.fly.dev/v1/connect/whoop/callback \
 #     DEVICE_INGEST_TOKEN=... WEB_ORIGIN=https://<app>.fly.dev
-app = "baseline-longevity"
+app = "1800"
 primary_region = "lhr"
 
 [build]
