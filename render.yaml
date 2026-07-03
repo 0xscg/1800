@@ -1,0 +1,39 @@
+# Render blueprint — deploys the same Docker image as Fly (Dockerfile at root).
+# Postgres lives on Neon: create a project at neon.tech and paste its pooled
+# connection string into DATABASE_URL when Render prompts for it.
+#
+# Setup: Render dashboard -> New -> Blueprint -> connect this repo. Render
+# auto-deploys every push to main after that (no GitHub Actions job needed).
+#
+# NOTE: the free plan spins down on idle, which drops Whoop webhooks — use
+# starter (or keep free and rely on periodic backfill/device sync only).
+services:
+  - type: web
+    name: "1800"
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # Render has no release phase on all plans: run migrations, then serve.
+    # migrate is idempotent (schema_migrations), so this is safe on every boot.
+    dockerCommand: sh -c "/app/migrate /app/migrations && /app/api"
+    healthCheckPath: /v1/dashboard/today
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_URL # Neon pooled connection string (postgres://...neon.tech/...?sslmode=require)
+        sync: false
+      - key: WHOOP_CLIENT_ID
+        sync: false
+      - key: WHOOP_CLIENT_SECRET
+        sync: false
+      - key: WHOOP_REDIRECT_URL # https://<service>.onrender.com/v1/connect/whoop/callback
+        sync: false
+      - key: WEB_ORIGIN # https://<service>.onrender.com
+        sync: false
+      - key: DEVICE_INGEST_TOKEN
+        generateValue: true
+      - key: BREVO_API_KEY # optional; nothing sends email yet
+        sync: false

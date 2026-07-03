@@ -44,15 +44,22 @@ jobs:
           npm ci
           npm run build
 
-  deploy:
+  # Render deploys via its own GitHub integration (render.yaml blueprint),
+  # not from this workflow. This job targets Fly and no-ops until a
+  # FLY_API_TOKEN secret is added.
+  deploy-fly:
     needs: test
     runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - if: env.FLY_API_TOKEN != ''
+        uses: superfly/flyctl-actions/setup-flyctl@master
+      - if: env.FLY_API_TOKEN != ''
+        run: flyctl deploy --remote-only
+      - if: env.FLY_API_TOKEN == ''
+        run: echo "FLY_API_TOKEN not set — skipping Fly deploy (Render handles deploys)."
 
   android-apk:
     needs: test
@@ -64,9 +71,17 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: android-actions/setup-android@v3
+      - name: Unit tests + lint
+        working-directory: android
+        run: ./gradlew testDebugUnitTest lintDebug
       - name: Build APK
         working-directory: android
         run: ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-reports
+          path: android/app/build/reports/
       - uses: actions/upload-artifact@v4
         with:
           name: baseline-debug-apk
